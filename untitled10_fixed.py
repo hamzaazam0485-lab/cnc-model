@@ -14,8 +14,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score
 
 
 # ----------------------------- Page setup -----------------------------
@@ -33,6 +31,66 @@ st.write(
 
 CLASS_NAMES = ["Circle", "Square", "Triangle"]
 IMAGE_SIZE = 32
+
+
+def stratified_split(X, y, test_size=0.2, random_state=42):
+    """Split arrays while preserving the proportion of each class."""
+    rng = np.random.default_rng(random_state)
+    train_indices, test_indices = [], []
+    for class_id in np.unique(y):
+        class_indices = np.flatnonzero(y == class_id)
+        class_indices = rng.permutation(class_indices)
+        n_test = max(1, int(round(len(class_indices) * test_size)))
+        test_indices.extend(class_indices[:n_test])
+        train_indices.extend(class_indices[n_test:])
+    train_indices = rng.permutation(np.asarray(train_indices, dtype=np.int64))
+    test_indices = rng.permutation(np.asarray(test_indices, dtype=np.int64))
+    return X[train_indices], X[test_indices], y[train_indices], y[test_indices]
+
+
+def make_classification_report(y_true, y_pred, class_names):
+    """Return a sklearn-style report and metrics using NumPy only."""
+    rows = {}
+    supports, precisions, recalls, f1_scores = [], [], [], []
+    for class_id, name in enumerate(class_names):
+        tp = int(np.sum((y_true == class_id) & (y_pred == class_id)))
+        fp = int(np.sum((y_true != class_id) & (y_pred == class_id)))
+        fn = int(np.sum((y_true == class_id) & (y_pred != class_id)))
+        support = int(np.sum(y_true == class_id))
+        precision = tp / (tp + fp) if tp + fp else 0.0
+        recall = tp / (tp + fn) if tp + fn else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        rows[name] = {"precision": precision, "recall": recall, "f1-score": f1, "support": support}
+        supports.append(support)
+        precisions.append(precision)
+        recalls.append(recall)
+        f1_scores.append(f1)
+
+    total = int(sum(supports))
+    accuracy = float(np.mean(y_true == y_pred)) if total else 0.0
+    rows["accuracy"] = accuracy
+    rows["macro avg"] = {
+        "precision": float(np.mean(precisions)), "recall": float(np.mean(recalls)),
+        "f1-score": float(np.mean(f1_scores)), "support": total,
+    }
+    weights = np.asarray(supports, dtype=float)
+    rows["weighted avg"] = {
+        "precision": float(np.average(precisions, weights=weights)) if total else 0.0,
+        "recall": float(np.average(recalls, weights=weights)) if total else 0.0,
+        "f1-score": float(np.average(f1_scores, weights=weights)) if total else 0.0,
+        "support": total,
+    }
+
+    header = f"{'':<14}{'precision':>10}{'recall':>10}{'f1-score':>10}{'support':>10}"
+    lines = [header, ""]
+    for name in class_names:
+        r = rows[name]
+        lines.append(f"{name:<14}{r['precision']:>10.2f}{r['recall']:>10.2f}{r['f1-score']:>10.2f}{r['support']:>10d}")
+    lines.extend(["", f"{'accuracy':<34}{accuracy:>10.2f}{total:>10d}"])
+    for name in ("macro avg", "weighted avg"):
+        r = rows[name]
+        lines.append(f"{name:<14}{r['precision']:>10.2f}{r['recall']:>10.2f}{r['f1-score']:>10.2f}{r['support']:>10d}")
+    return rows, "\n".join(lines)
 
 
 # -------------------------- Dataset generation -------------------------
@@ -83,12 +141,8 @@ def train_cnn():
     X, y = generate_shapes_dataset()
     X = np.expand_dims(X, axis=-1)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y,
+    X_train, X_test, y_train, y_test = stratified_split(
+        X, y, test_size=0.2, random_state=42
     )
 
     model = tf.keras.Sequential([
@@ -120,20 +174,9 @@ def train_cnn():
 
     probabilities = model.predict(X_test, verbose=0)
     predictions = np.argmax(probabilities, axis=1)
-    accuracy = accuracy_score(y_test, predictions)
-
-    report_dict = classification_report(
-        y_test,
-        predictions,
-        target_names=CLASS_NAMES,
-        output_dict=True,
-        zero_division=0,
-    )
-    report_text = classification_report(
-        y_test,
-        predictions,
-        target_names=CLASS_NAMES,
-        zero_division=0,
+    accuracy = float(np.mean(y_test == predictions))
+    report_dict, report_text = make_classification_report(
+        y_test, predictions, CLASS_NAMES
     )
 
     comparison = pd.DataFrame({
